@@ -1,0 +1,85 @@
+plugins {
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+}
+
+version = project.mod_version
+group = project.maven_group
+
+repositories {
+	// Loom adds the Minecraft and Fabric repositories automatically. Maven Central is only here for
+	// the test dependencies.
+	mavenCentral()
+}
+
+loom {
+	mods {
+		"chestloader" {
+			sourceSet sourceSets.main
+		}
+	}
+}
+
+// Creates the src/gametest source set and a runGameTest task, and hooks it into "check".
+// These cover what the plain unit tests cannot reach: the mixin on the container open and close
+// path, the two halves of a double chest, and item stacks that actually carry data components.
+fabricApi {
+	configureTests {
+		createSourceSet = true
+		modId = "chestloader-test"
+		enableGameTests = true
+		enableClientGameTests = false
+		eula = true
+	}
+}
+
+dependencies {
+	// To change the versions see the gradle.properties file
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+
+	// Used for the lifecycle events and the command registration callback.
+	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	testImplementation platform("org.junit:junit-bom:5.11.4")
+	testImplementation "org.junit.jupiter:junit-jupiter"
+	testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+}
+
+test {
+	useJUnitPlatform()
+}
+
+// Without this the dev server has no console, so you cannot even type "stop".
+tasks.withType(JavaExec).configureEach {
+	standardInput = System.in
+}
+
+processResources {
+	def version = project.version
+	inputs.property "version", version
+
+	filesMatching("fabric.mod.json") {
+		expand "version": version
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 25
+	it.options.encoding = 'UTF-8'
+}
+
+java {
+	withSourcesJar()
+
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
+}
+
+jar {
+	def projectName = project.name
+	inputs.property "projectName", projectName
+
+	from("LICENSE") {
+		rename { "${it}_$projectName" }
+	}
+}

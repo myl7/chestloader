@@ -1,0 +1,37 @@
+{
+	"schemaVersion": 1,
+	"id": "chestloader",
+	"version": "${version}",
+	"name": "Chest Loader",
+	"description": "Vanilla-taste, server-only, and vanilla-client-friendly nether portal chunk loader that lives in a chest.",
+	"authors": [
+		{
+			"name": "Yulong Ming",
+			"contact": {
+				"email": "i@myl7.org"
+			}
+		}
+	],
+	"contact": {
+		"homepage": "https://github.com/myl7/chestloader",
+		"sources": "https://github.com/myl7/chestloader",
+		"issues": "https://github.com/myl7/chestloader/issues"
+	},
+	"license": "Apache-2.0",
+	"icon": "assets/chestloader/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"org.myl7.chestloader.ChestLoader"
+		]
+	},
+	"mixins": [
+		"chestloader.mixins.json"
+	],
+	"depends": {
+		"fabricloader": ">=0.19.3",
+		"minecraft": "~26.2",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}

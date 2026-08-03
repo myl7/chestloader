@@ -1,0 +1,14 @@
+{
+	"required": true,
+	"package": "org.myl7.chestloader.mixin",
+	"compatibilityLevel": "JAVA_25",
+	"mixins": [
+		"ContainerOpenersCounterMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	},
+	"overwrites": {
+		"requireAnnotations": true
+	}
+}
