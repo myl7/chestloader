@@ -92,6 +92,8 @@ public final class LoaderManager {
 		ALREADY_ENABLED,
 		/** The position is not tracked at all. */
 		NOT_A_LOADER,
+		/** The supplied position is outside the world or cannot be stored as a packed block position. */
+		OUT_OF_BOUNDS,
 		/** The chunk was readable and the pattern is gone, so the record was discarded instead. */
 		DISMANTLED,
 		LIMIT_TOTAL,
@@ -418,6 +420,9 @@ public final class LoaderManager {
 	 * loader still awaiting its first check after a restore.
 	 */
 	public ToggleResult disable(ServerLevel level, BlockPos pos) {
+		if (!isExactlyPackable(pos)) {
+			return ToggleResult.OUT_OF_BOUNDS;
+		}
 		DimensionState state = state(level);
 		if (state.disabled().contains(pos.asLong())) {
 			return ToggleResult.ALREADY_DISABLED;
@@ -443,6 +448,9 @@ public final class LoaderManager {
 	 * readable. When the chunk happens to be readable right now, the check runs immediately instead.
 	 */
 	public ToggleResult enable(ServerLevel level, BlockPos pos) {
+		if (!isExactlyPackable(pos)) {
+			return ToggleResult.OUT_OF_BOUNDS;
+		}
 		DimensionState state = state(level);
 		long packed = pos.asLong();
 		if (state.positions().contains(packed)) {
@@ -450,6 +458,9 @@ public final class LoaderManager {
 		}
 		if (!state.disabled().contains(packed)) {
 			return ToggleResult.NOT_A_LOADER;
+		}
+		if (!level.isInWorldBounds(pos)) {
+			return ToggleResult.OUT_OF_BOUNDS;
 		}
 		if (countTotal() >= rules.maxLoadersTotal()) {
 			return ToggleResult.LIMIT_TOTAL;
@@ -470,6 +481,15 @@ public final class LoaderManager {
 		}
 		state.validation.await(packed);
 		return ToggleResult.ENABLED_AWAITING_CHECK;
+	}
+
+	/**
+	 * Saved positions use {@link BlockPos#asLong()}. Coordinates outside that packed range wrap to a
+	 * different position; accepting one would look up one loader but add or remove the ticket for a
+	 * different chunk.
+	 */
+	private static boolean isExactlyPackable(BlockPos pos) {
+		return BlockPos.of(pos.asLong()).equals(pos);
 	}
 
 	/** Drops a disabled record whose container turned out to be dismantled. */

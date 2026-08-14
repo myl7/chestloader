@@ -94,6 +94,7 @@ public final class ChestLoaderCommand {
 			case ALREADY_DISABLED -> "The chunk loader at " + where + " is already disabled";
 			case ALREADY_ENABLED -> "The chunk loader at " + where + " is already enabled";
 			case NOT_A_LOADER -> "No chunk loader at " + where;
+			case OUT_OF_BOUNDS -> "The position " + where + " is outside the world";
 			case DISMANTLED -> "The container at " + where
 					+ " no longer holds the pattern, its disabled record is removed";
 			case LIMIT_TOTAL -> "Chunk loader limit reached for the server ("

@@ -41,7 +41,7 @@
 
 39 个 JUnit 用例覆盖形状判定、配置解析、ticket 等级换算、存档 codec 往返（含 disabled 集合及其向后兼容）和恢复时的未加载轮次计数。它们不起服务端，`./gradlew test` 一秒出结果。形状判定通过一个只暴露物品和数量的 `SlotView` 接口来测，因为 26.2 里 `ItemStack` 的 data components 要等数据包加载才绑定，纯 JUnit 造不出来。
 
-9 个 GameTest 覆盖 JUnit 够不到的部分：mock 玩家开关容器时 mixin 是否真的触发、大箱子两半是否各自独立判定、带 data components 的物品是否照样算数，以及 enable、disable 两个状态转换和它们的 ticket 处理。用 `./gradlew runGameTest` 单独跑。它会起一个测试服务端，所以 `build.gradle` 里写了 `eula = true`。
+10 个 GameTest 覆盖 JUnit 够不到的部分：mock 玩家开关容器时 mixin 是否真的触发、大箱子两半是否各自独立判定、带 data components 的物品是否照样算数，以及 enable、disable 两个状态转换和它们的 ticket 处理。用 `./gradlew runGameTest` 单独跑。它会起一个测试服务端，所以 `build.gradle` 里写了 `eula = true`。
 
 `fabric.mod.json` 的 environment 填的是 `*`，单人存档和专用服务器都能用。填 `server` 的话单人游戏里内置服务端属于客户端环境，mod 不会加载。自定义 ticket 类型注册进 `BuiltInRegistries.TICKET_TYPE`，这个注册表没有 SYNCED 属性，不参与注册表同步，所以原版客户端仍然能连入装了本 mod 的服务器。
 

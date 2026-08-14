@@ -177,6 +177,29 @@ public final class ChestLoaderGameTest {
 	}
 
 	@GameTest
+	public void anAliasedPositionCannotEnableARealLoader(GameTestHelper helper) {
+		BlockPos pos = new BlockPos(1, 1, 1);
+		BarrelBlockEntity barrel = placeBarrel(helper, pos);
+		fillPattern(barrel);
+		Player player = helper.makeMockPlayer(GameType.SURVIVAL);
+		barrel.startOpen(player);
+
+		BlockPos absolutePos = helper.absolutePos(pos);
+		manager().disable(helper.getLevel(), absolutePos);
+		helper.assertTrue(isDisabled(helper, pos), "the real loader has to be disabled before the alias is tried");
+
+		// BlockPos packs X into 26 bits. Adding 2^26 produces the same saved key but names a
+		// different chunk. It must not move the real record into the active set or add a ticket there.
+		BlockPos alias = absolutePos.offset(1 << 26, 0, 0);
+		helper.assertValueEqual(alias.asLong(), absolutePos.asLong(), "the test coordinates must alias");
+		ToggleResult result = manager().enable(helper.getLevel(), alias);
+		helper.assertValueEqual(result, ToggleResult.OUT_OF_BOUNDS, "enable outcome");
+		helper.assertTrue(isDisabled(helper, pos), "the real loader must stay disabled");
+		helper.assertFalse(isActive(helper, pos), "the real loader must not gain a ticket through its alias");
+		helper.succeed();
+	}
+
+	@GameTest
 	public void aDismantledDisabledLoaderLosesItsRecordOnClose(GameTestHelper helper) {
 		BlockPos pos = new BlockPos(1, 1, 1);
 		BarrelBlockEntity barrel = placeBarrel(helper, pos);
