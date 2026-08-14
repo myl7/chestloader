@@ -14,6 +14,7 @@
 - 跨重启保留，也能安全卸载。位置由 mod 自己存，世界加载时把加载加回去，不用重开容器，也不用进那个维度。卸载后原版的 ticket 存储里不留任何痕迹。
 - 形状可配置。图案、物品、每格数量都写在配置里一张配方式网格中。可以定义多套图案，各自开关平移和镜像，每格设最小和最大数量。
 - 任何改动都抓得到。开关容器时会判定，周期扫描还能抓到绕过回调的漏斗进出。同一区块里的多个加载箱按引用计数处理，大箱子两半各自独立判定。
+- 随时远程启停。`/chestloader disable` 撤掉加载但保留记录，`/chestloader enable` 远程恢复，不用跑到那个区块去。两种状态都跨重启保留，这两条指令连同 `list` 只需要权限等级 1。
 
 ## 版本
 
@@ -38,9 +39,9 @@
 
 ## 测试
 
-35 个 JUnit 用例覆盖形状判定、配置解析、ticket 等级换算、存档 codec 往返和恢复时的未加载轮次计数。它们不起服务端，`./gradlew test` 一秒出结果。形状判定通过一个只暴露物品和数量的 `SlotView` 接口来测，因为 26.2 里 `ItemStack` 的 data components 要等数据包加载才绑定，纯 JUnit 造不出来。
+39 个 JUnit 用例覆盖形状判定、配置解析、ticket 等级换算、存档 codec 往返（含 disabled 集合及其向后兼容）和恢复时的未加载轮次计数。它们不起服务端，`./gradlew test` 一秒出结果。形状判定通过一个只暴露物品和数量的 `SlotView` 接口来测，因为 26.2 里 `ItemStack` 的 data components 要等数据包加载才绑定，纯 JUnit 造不出来。
 
-5 个 GameTest 覆盖 JUnit 够不到的部分：mock 玩家开关容器时 mixin 是否真的触发、大箱子两半是否各自独立判定、带 data components 的物品是否照样算数。用 `./gradlew runGameTest` 单独跑。它会起一个测试服务端，所以 `build.gradle` 里写了 `eula = true`。
+10 个 GameTest 覆盖 JUnit 够不到的部分：mock 玩家开关容器时 mixin 是否真的触发、大箱子两半是否各自独立判定、带 data components 的物品是否照样算数，以及 enable、disable 两个状态转换和它们的 ticket 处理。用 `./gradlew runGameTest` 单独跑。它会起一个测试服务端，所以 `build.gradle` 里写了 `eula = true`。
 
 `fabric.mod.json` 的 environment 填的是 `*`，单人存档和专用服务器都能用。填 `server` 的话单人游戏里内置服务端属于客户端环境，mod 不会加载。自定义 ticket 类型注册进 `BuiltInRegistries.TICKET_TYPE`，这个注册表没有 SYNCED 属性，不参与注册表同步，所以原版客户端仍然能连入装了本 mod 的服务器。
 
@@ -88,6 +89,8 @@ ticket 带 does load、does simulate、should keep dimension active 三个 flag�
 
 同一个区块里有多个加载箱时，mod 按区块记引用计数，只在计数从 0 变 1 时加 ticket、从 1 变 0 时撤销。原版的 ticket 存储会把同一区块内类型和等级相同的 ticket 合并成一张，不记引用计数的话，撤销其中一个箱子会连带把另一个箱子的加载也撤掉。
 
+disabled 状态的加载器不参与上面这一切。它的区块通常没有加载，没有东西可读，也不该对它记未加载轮次。开关它不会让它复活，只有 enable 指令可以。回调和扫描对它做的是机会性清理：只要它的区块碰巧可读、而容器里的图案已经没了（或容器本身没了），记录就被删掉并通知附近玩家。区块未加载期间被拆掉的容器，记录会一直留到下次有东西看到它为止，最晚是 enable 指令本身——它会在区块回来后检查图案，不符合就删记录。上面那条 `BLOCK_ENTITY_UNLOAD` 撤销故意跳过 disabled 位置：这个事件在普通区块卸载时也会触发，而区块卸载对 disabled 的加载器来说是家常便饭，不代表容器被破坏。
+
 ## 持久化
 
 激活位置按维度存在 `dimensions/<命名空间>/<路径>/data/chestloader/loaders.dat`，内容是一串打包过的方块坐标。世界重新打开时 mod 从这里把 ticket 加回去，不需要玩家再开一次容器，也不需要玩家进入那个维度。
@@ -99,6 +102,8 @@ ticket 带 does load、does simulate、should keep dimension active 三个 flag�
 恢复时先无条件把 ticket 加回去，不看容器内容。这是因为读容器需要区块已加载，而加载区块正是 ticket 的作用。复查挂在周期扫描上，扫描时先查该区块是否已加载，没加载就跳过本轮只记一次数，加载了再取方块实体做完整判定，不通过就撤销。不用固定延迟是为了避免区块加载被别的因素拖慢时误撤销。连续 10 轮扫描都读不到的位置会被撤销并写一条警告日志，避免脏数据永久占着一张 ticket。
 
 恢复时还会做三项检查。超出 `maxLoadersPerDimension` 或 `maxLoadersTotal` 的部分直接丢弃并写日志，因为两次启动之间上限可能被调小。坐标落在世界边界或高度范围之外的直接丢弃。数据包定义的维度被移除时，那个维度的记录随维度目录一起不再被读取。
+
+disabled 位置存在同一个文件里，用独立的 `disabled` 字段，同一个位置不会同时出现在两个集合中。启停功能之前的旧存档解码出来就是一个空的 disabled 集合。反过来降级到旧版 mod 时，旧版会忽略这个未知字段，disabled 记录被遗忘，但不会错误加载任何东西。恢复时 disabled 位置不加 ticket 也不挂复查，只做越界检查；数量上限对它不生效，因为上限约束的是实际加载的区块，而 disabled 的加载器什么都不加载。也因为这样，enable 时会重新检查上限，满了就失败并提示。
 
 ## 配置
 
@@ -157,15 +162,22 @@ ticket 带 does load、does simulate、should keep dimension active 三个 flag�
 /chestloader list
 ```
 
-列出当前所有激活的容器，按维度分组，同时显示 ticket 等级、半径和加载边长。重启后还没复查过的位置会额外标出来。
+列出所有被跟踪的容器，enabled 和 disabled 都在内，按维度分组，同时显示 ticket 等级、半径和加载边长。重启或远程 enable 后还没复查过的位置会额外标出来，disabled 的位置标 `disabled`。聊天栏里每个条目末尾有一个可点击的 `[disable]` 或 `[enable]` 按钮，点击即执行对应指令；按钮里显式写了维度，跨维度也能用。控制台里按钮显示为纯文本。
+
+```
+/chestloader disable <x> <y> <z> [维度]
+/chestloader enable <x> <y> <z> [维度]
+```
+
+`disable` 撤掉一个激活加载器的加载，但保留记录；容器原地不动，区块像普通区块一样卸载。如果同区块还有别的加载器，区块会继续保持加载，回复里会说明。`enable` 远程还给一个 disabled 加载器它的 ticket：区块不需要已加载，也不需要有人跑过去。读容器需要区块已加载，而加载区块正是 ticket 的作用，所以远程 enable 和重启恢复走同一套机制：先加 ticket，周期扫描等区块可读后做第一次检查，不符合就撤销。区块碰巧已经可读时当场检查，图案已经没了的话直接删掉记录。省略维度参数时在指令发送者所在维度执行。
+
+`list`、`enable`、`disable` 需要 moderator 权限等级（1），受信任的玩家不用完整指令权限也能管理加载。`check` 驱动整条激活链路，保持 gamemaster 等级（2）。
 
 ```
 /chestloader check <x> <y> <z>
 ```
 
-对指定位置跑一次与开箱完全相同的判定，符合就激活，不符合就撤销。用来在不碰容器的前提下查一个位置的状态，也是唯一能从控制台驱动整条激活链路的入口，无头服务器上验证时用得到。
-
-两条指令都需要 gamemaster 权限等级。
+对指定位置跑一次与开箱完全相同的判定，符合就激活，不符合就撤销。对 disabled 位置只报告状态，绝不激活。用来在不碰容器的前提下查一个位置的状态，也是唯一能从控制台驱动整条激活链路的入口，无头服务器上验证时用得到。
 
 ## 玩家反馈
 
@@ -181,7 +193,9 @@ ticket 带 does load、does simulate、should keep dimension active 三个 flag�
 
 激活的容器被这套形状占满，不能再存别的东西，也不能接漏斗输入。
 
-重启后加载位置会立刻恢复，但复查要等到下一个扫描周期。这段时间里一个在离线期间被改坏的容器仍然占着 ticket，最长一个 `scanIntervalTicks`。
+重启后加载位置会立刻恢复，但复查要等到下一个扫描周期。这段时间里一个在离线期间被改坏的容器仍然占着 ticket，最长一个 `scanIntervalTicks`。远程 enable 有同样的窗口。
+
+disabled 期间被拆掉的加载器，只要区块一直没加载就一直没人发现，`/chestloader list` 里可能挂着一条已经过时的 disabled 记录，直到下次有东西看到那个区块。记录一旦被删，在同一个容器里重新摆出图案就是一个全新的加载器，走正常的开箱判定激活；mod 不会记得它曾经被 disable 过。
 
 ## 验收方法
 
@@ -202,6 +216,12 @@ ticket 带 does load、does simulate、should keep dimension active 三个 flag�
 在下界放一个加载器，重启后所有玩家都留在主世界，确认下界的机器继续运行。
 
 停服后手动改坏容器内容再重启，确认过一个扫描周期后加载被撤销。
+
+在 `/chestloader list` 里 disable 一个激活的加载器，走开后用 `F3` 加 `G` 确认区块卸载。重启服务器，确认它仍然列为 disabled。
+
+人在另一个维度，点一个 disabled 加载器的 `[enable]`，等一个扫描周期，确认加载器旁的机器在没人过去的情况下恢复运转。
+
+disable 一个加载器，在区块加载着的时候拆掉图案，确认记录从列表里消失。再试区块未加载的情况，确认记录一直留到 enable 时才被删掉。
 
 ## 后续
 

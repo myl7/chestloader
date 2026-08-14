@@ -18,14 +18,16 @@ import net.minecraft.world.level.block.entity.ChestBlockEntity;
 import net.minecraft.world.level.block.state.properties.ChestType;
 import org.myl7.chestloader.ChestLoader;
 import org.myl7.chestloader.LoaderManager;
+import org.myl7.chestloader.LoaderManager.ToggleResult;
 
 /**
- * The three things the plain unit tests cannot reach.
+ * What the plain unit tests cannot reach.
  *
  * <p>The shape rules themselves are covered by {@code LoaderRulesTest}, which runs without a server
  * and is far quicker, so nothing here repeats them. What is left needs a live world: the mixin on
- * the container open and close path, the two halves of a double chest, and item stacks that carry
- * real data components, which cannot even be constructed until a server has bound them.
+ * the container open and close path, the two halves of a double chest, item stacks that carry real
+ * data components, which cannot even be constructed until a server has bound them, and the enable
+ * and disable transitions with their ticket handling.
  */
 public final class ChestLoaderGameTest {
 	/** Ring slots of the pattern at column offset 1, the layout the README draws. */
@@ -132,6 +134,111 @@ public final class ChestLoaderGameTest {
 		helper.succeed();
 	}
 
+	@GameTest
+	public void disablingRemovesTheLoadingButKeepsTheRecord(GameTestHelper helper) {
+		BlockPos pos = new BlockPos(1, 1, 1);
+		BarrelBlockEntity barrel = placeBarrel(helper, pos);
+		fillPattern(barrel);
+		Player player = helper.makeMockPlayer(GameType.SURVIVAL);
+		barrel.startOpen(player);
+		helper.assertTrue(isActive(helper, pos), "the barrel should activate before it can be disabled");
+
+		// The exact outcome may be DISABLED or DISABLED_CHUNK_STILL_HELD, depending on whether a
+		// neighbouring test happens to run a loader in the same chunk, so only the state is asserted.
+		manager().disable(helper.getLevel(), helper.absolutePos(pos));
+		helper.assertFalse(isActive(helper, pos), "a disabled loader must not stay active");
+		helper.assertTrue(isDisabled(helper, pos), "a disabled loader must keep its record");
+
+		// Only the enable command may bring it back; an open or a close must not.
+		barrel.stopOpen(player);
+		barrel.startOpen(player);
+		helper.assertFalse(isActive(helper, pos), "opening a disabled loader must not reactivate it");
+		helper.assertTrue(isDisabled(helper, pos), "opening a disabled loader must not drop its record");
+		helper.succeed();
+	}
+
+	@GameTest
+	public void enablingRestoresADisabledLoader(GameTestHelper helper) {
+		BlockPos pos = new BlockPos(1, 1, 1);
+		BarrelBlockEntity barrel = placeBarrel(helper, pos);
+		fillPattern(barrel);
+		Player player = helper.makeMockPlayer(GameType.SURVIVAL);
+		barrel.startOpen(player);
+		manager().disable(helper.getLevel(), helper.absolutePos(pos));
+		helper.assertTrue(isDisabled(helper, pos), "the loader has to be disabled before enable means anything");
+
+		// The test area keeps the chunk readable, so the check runs on the spot and no awaiting
+		// state is left behind.
+		ToggleResult enabled = manager().enable(helper.getLevel(), helper.absolutePos(pos));
+		helper.assertValueEqual(enabled, ToggleResult.ENABLED, "enable outcome");
+		helper.assertTrue(isActive(helper, pos), "an enabled loader should hold its ticket again");
+		helper.assertFalse(isDisabled(helper, pos), "an enabled loader should leave the disabled set");
+		helper.succeed();
+	}
+
+	@GameTest
+	public void anAliasedPositionCannotEnableARealLoader(GameTestHelper helper) {
+		BlockPos pos = new BlockPos(1, 1, 1);
+		BarrelBlockEntity barrel = placeBarrel(helper, pos);
+		fillPattern(barrel);
+		Player player = helper.makeMockPlayer(GameType.SURVIVAL);
+		barrel.startOpen(player);
+
+		BlockPos absolutePos = helper.absolutePos(pos);
+		manager().disable(helper.getLevel(), absolutePos);
+		helper.assertTrue(isDisabled(helper, pos), "the real loader has to be disabled before the alias is tried");
+
+		// BlockPos packs X into 26 bits. Adding 2^26 produces the same saved key but names a
+		// different chunk. It must not move the real record into the active set or add a ticket there.
+		BlockPos alias = absolutePos.offset(1 << 26, 0, 0);
+		helper.assertValueEqual(alias.asLong(), absolutePos.asLong(), "the test coordinates must alias");
+		ToggleResult result = manager().enable(helper.getLevel(), alias);
+		helper.assertValueEqual(result, ToggleResult.OUT_OF_BOUNDS, "enable outcome");
+		helper.assertTrue(isDisabled(helper, pos), "the real loader must stay disabled");
+		helper.assertFalse(isActive(helper, pos), "the real loader must not gain a ticket through its alias");
+		helper.succeed();
+	}
+
+	@GameTest
+	public void aDismantledDisabledLoaderLosesItsRecordOnClose(GameTestHelper helper) {
+		BlockPos pos = new BlockPos(1, 1, 1);
+		BarrelBlockEntity barrel = placeBarrel(helper, pos);
+		fillPattern(barrel);
+		Player player = helper.makeMockPlayer(GameType.SURVIVAL);
+		barrel.startOpen(player);
+		manager().disable(helper.getLevel(), helper.absolutePos(pos));
+
+		// Breaking the ring while disabled goes unnoticed until the container is looked at again;
+		// the close hook is one of the opportunistic checks that does.
+		barrel.setItem(RING_SLOTS[0], ItemStack.EMPTY);
+		barrel.stopOpen(player);
+		helper.assertFalse(isDisabled(helper, pos), "a dismantled disabled loader should lose its record");
+		helper.assertFalse(isActive(helper, pos), "and it certainly must not become active");
+		helper.succeed();
+	}
+
+	@GameTest
+	public void enablingADismantledLoaderDiscardsTheRecord(GameTestHelper helper) {
+		BlockPos pos = new BlockPos(1, 1, 1);
+		BarrelBlockEntity barrel = placeBarrel(helper, pos);
+		fillPattern(barrel);
+		Player player = helper.makeMockPlayer(GameType.SURVIVAL);
+		barrel.startOpen(player);
+		barrel.stopOpen(player);
+		manager().disable(helper.getLevel(), helper.absolutePos(pos));
+
+		// With the container closed, emptying a slot fires no hook, so the record survives until the
+		// enable command looks at the readable chunk and finds the pattern gone.
+		barrel.setItem(RING_SLOTS[0], ItemStack.EMPTY);
+		helper.assertTrue(isDisabled(helper, pos), "nothing has looked at the container yet");
+
+		ToggleResult enabled = manager().enable(helper.getLevel(), helper.absolutePos(pos));
+		helper.assertValueEqual(enabled, ToggleResult.DISMANTLED, "enable outcome");
+		helper.assertFalse(isActive(helper, pos), "a dismantled loader must not activate");
+		helper.assertFalse(isDisabled(helper, pos), "a dismantled loader must lose its record");
+		helper.succeed();
+	}
+
 	private static BarrelBlockEntity placeBarrel(GameTestHelper helper, BlockPos pos) {
 		helper.setBlock(pos, Blocks.BARREL);
 		return helper.getBlockEntity(pos, BarrelBlockEntity.class);
@@ -148,11 +255,19 @@ public final class ChestLoaderGameTest {
 		container.setItem(MINECART_SLOT, new ItemStack(Items.MINECART));
 	}
 
-	private static boolean isActive(GameTestHelper helper, BlockPos relativePos) {
+	private static LoaderManager manager() {
 		LoaderManager manager = ChestLoader.manager();
 		if (manager == null) {
 			throw new IllegalStateException("Chest Loader is not running, the test mod is misconfigured");
 		}
-		return manager.isActive(helper.getLevel(), helper.absolutePos(relativePos));
+		return manager;
+	}
+
+	private static boolean isActive(GameTestHelper helper, BlockPos relativePos) {
+		return manager().isActive(helper.getLevel(), helper.absolutePos(relativePos));
+	}
+
+	private static boolean isDisabled(GameTestHelper helper, BlockPos relativePos) {
+		return manager().isDisabled(helper.getLevel(), helper.absolutePos(relativePos));
 	}
 }
