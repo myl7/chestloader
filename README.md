@@ -1,5 +1,7 @@
 # Chest Loader
 
+[![CurseForge Downloads](https://img.shields.io/curseforge/dt/1638282?logo=curseforge&label=CurseForge&color=F16436)](https://www.curseforge.com/minecraft/mc-mods/chestloader)
+
 Vanilla-taste, server-only, and vanilla-client-friendly nether portal chunk loader that lives in a chest.
 
 This document is also available in [中文](README.zh.md).
@@ -15,6 +17,7 @@ Arrange obsidian, powered rail and a minecart the right way inside a chest or a 
 - Configurable pattern. The shape, the items and the per-slot counts all live in a recipe-style grid in the config. Define several patterns, let each one slide or mirror, and set a min and max count per slot.
 - Per-dimension control. Each pattern lists the dimensions it applies in, and a dimension no pattern lists never activates anything. The Overworld and the Nether are on by default, the End is off until one config line turns it on, and a data-pack dimension is enabled by its identifier the same way.
 - Catches every change. Opening and closing a container is checked, and a periodic scan catches hopper transfers that skip those hooks. Loaders sharing a chunk are reference-counted, and the two halves of a double chest are judged separately.
+- Switch a loader off and on from anywhere. `/chestloader disable` releases the loading but keeps the loader on record, and `/chestloader enable` brings it back remotely, with no need to visit the chunk. Both states survive a restart, and the commands, along with `list`, only ask for permission level 1.
 
 ## Versions
 
@@ -39,9 +42,9 @@ The artifact lands at `build/libs/chestloader-0.1.0.jar`. `build` runs the tests
 
 ## Tests
 
-42 JUnit cases cover shape matching, per-dimension gating, config parsing, ticket-level arithmetic, the saved-data codec round trip, and the unreadable-round counting during restore. They run without a server, so `./gradlew test` finishes in about a second. Shape matching is tested through a `SlotView` interface that exposes only the item and the count, because in 26.2 an `ItemStack`'s data components are bound only once the data packs load, and a plain JUnit test cannot build one.
+46 JUnit cases cover shape matching, per-dimension gating, config parsing, ticket-level arithmetic, the saved-data codec round trip including the disabled set and its backward compatibility, and the unreadable-round counting during restore. They run without a server, so `./gradlew test` finishes in about a second. Shape matching is tested through a `SlotView` interface that exposes only the item and the count, because in 26.2 an `ItemStack`'s data components are bound only once the data packs load, and a plain JUnit test cannot build one.
 
-5 GameTests cover what the JUnit tests cannot reach: whether the mixin really fires when a mock player opens and closes a container, whether the two halves of a double chest are judged separately, and whether items carrying data components still count. Run them on their own with `./gradlew runGameTest`. That starts a test server, so `build.gradle` sets `eula = true`.
+10 GameTests cover what the JUnit tests cannot reach: whether the mixin really fires when a mock player opens and closes a container, whether the two halves of a double chest are judged separately, whether items carrying data components still count, and the enable and disable transitions with their ticket handling. Run them on their own with `./gradlew runGameTest`. That starts a test server, so `build.gradle` sets `eula = true`.
 
 `fabric.mod.json` declares the environment as `*`, so the mod works in single player and on a dedicated server. Declaring `server` would keep it from loading in single player, because the integrated server there counts as a client environment. The custom ticket type is registered into `BuiltInRegistries.TICKET_TYPE`. That registry has no SYNCED attribute and takes no part in registry sync, so a vanilla client can still join a server that runs this mod.
 
@@ -95,6 +98,8 @@ When a container is broken, `ServerBlockEntityEvents.BLOCK_ENTITY_UNLOAD` revoke
 
 When several loader containers share one chunk, the mod keeps a reference count per chunk and only adds the ticket as the count goes from 0 to 1 and removes it as the count goes from 1 to 0. Vanilla ticket storage collapses tickets of the same type and level within a chunk into one, so without a reference count, revoking one container would drop the loading for the other as well.
 
+A disabled loader is exempt from all of the above. Its chunk is usually not loaded, so there is nothing to read and nothing to count rounds against. Opening or closing it never reactivates it, only the enable command does. What the hooks and the scan do instead is opportunistic housekeeping: whenever a disabled loader's chunk happens to be readable and the container no longer holds the pattern, or the container is gone, the record is discarded and players nearby are told. A disabled container broken while its chunk was unloaded keeps its record until something looks at it again, at the latest the enable command itself, which checks the pattern once the chunk is back and discards the record on a miss. The `BLOCK_ENTITY_UNLOAD` revocation above deliberately skips disabled positions: that event also fires on a plain chunk unload, which for a disabled loader is everyday life, not a broken container.
+
 ## Persistence
 
 Active positions are stored per dimension at `dimensions/<namespace>/<path>/data/chestloader/loaders.dat`, as a run of packed block positions. When the world reopens, the mod puts the tickets back from there, with no need for a player to open the container again or even to enter that dimension.
@@ -106,6 +111,8 @@ Storing the positions itself has another benefit: removing the mod is safe. `chu
 On restore the ticket goes back unconditionally, without reading the container. That is because reading a container needs its chunk loaded, and loading the chunk is exactly what the ticket is for. The re-check rides on the periodic scan. The scan first asks whether the chunk is loaded, skips the round and counts it once if not, and otherwise takes the block entity and runs the full check, revoking on a miss. Counting rounds rather than waiting a fixed delay avoids a wrong revocation when chunk loading is held up by something else. A position that stays unreadable for ten scans in a row is revoked with a warning logged, so stale data cannot hold a ticket forever.
 
 Restore also runs four checks. Anything over `maxLoadersPerDimension` or `maxLoadersTotal` is dropped with a log line, because the limits may have been lowered between two starts. A position outside the world border or the height range is dropped. A dimension that no pattern applies in any more — the End turned back off between two starts, say — has all its recorded positions dropped with a log line. When a data-pack dimension is removed, its records are no longer read, along with its dimension directory.
+
+Disabled positions live in the same file, under their own `disabled` field, and a position is never in both sets at once. A save from before the disable feature simply decodes with an empty disabled set. Going back the other way, an older version of the mod ignores the unknown field, so the disabled records are forgotten without loading anything they should not. On restore a disabled position gets no ticket and no pending check, only the out-of-bounds check; the count limits do not apply to it, because they bound what is loaded and a disabled loader loads nothing. For the same reason the limits are re-checked when a loader is enabled, and enabling fails with a message when they are full.
 
 ## Config
 
@@ -169,15 +176,22 @@ An item in `items` that cannot be found is logged as a warning on start and skip
 /chestloader list
 ```
 
-Lists every active container, grouped by dimension, along with the ticket level, radius and loaded side length. A position not yet re-checked after a restart is marked as such.
+Lists every tracked container, enabled and disabled, grouped by dimension, along with the ticket level, radius and loaded side length. A position not yet re-checked after a restart or a remote enable is marked as such, and a disabled one is marked `disabled`. In the chat, each entry ends in a clickable `[disable]` or `[enable]` button that runs the matching command; the button spells the dimension out, so it works from any dimension. The console shows the buttons as plain text.
+
+```
+/chestloader disable <x> <y> <z> [dimension]
+/chestloader enable <x> <y> <z> [dimension]
+```
+
+`disable` releases the loading of an active loader but keeps it on record; the container stays where it is and the chunk unloads like any other. If another loader shares the chunk, the chunk stays loaded and the reply says so. `enable` gives a disabled loader its ticket back from anywhere: the chunk does not need to be loaded, and nobody needs to travel there. Since reading the container needs the chunk and loading the chunk is what the ticket is for, a remote enable works like the restore after a restart: ticket first, then the periodic scan runs the first check once the chunk is readable, revoking on a miss. When the chunk happens to be readable already, the check runs on the spot, and enabling a container that no longer holds the pattern discards the record instead. Without the dimension argument the command acts in the sender's dimension.
+
+`list`, `enable` and `disable` need the moderator permission level (1), so trusted players can manage the loading without full command access. `check` drives the whole activation path and keeps the gamemaster level (2).
 
 ```
 /chestloader check <x> <y> <z>
 ```
 
-Runs the same check as opening the container at the given position, activating on a match and revoking on a miss. Use it to read a position's state without touching the container. It is also the only way to drive the whole activation path from the console, which helps when verifying on a headless server. In a dimension no pattern applies in, the command says so outright rather than judging the container — the one place the mod names the reason, since the player-facing path stays silent there.
-
-Both commands need the gamemaster permission level.
+Runs the same check as opening the container at the given position, activating on a match and revoking on a miss. On a disabled position it reports the disabled state and never activates. In a dimension no pattern applies in, it reports that chunk loaders are disabled there instead of judging the container. Use it to read a position's state without touching the container. It is also the only way to drive the whole activation path from the console, which helps when verifying on a headless server.
 
 ## Player feedback
 
@@ -193,7 +207,9 @@ Chunk borders cut some mechanics off. A fluid or fire spreading into the first b
 
 An active container is filled by this shape and cannot store anything else, nor take a hopper input.
 
-After a restart the loaded positions come back at once, but the re-check waits for the next scan cycle. During that window a container broken while offline still holds its ticket, for at most one `scanIntervalTicks`.
+After a restart the loaded positions come back at once, but the re-check waits for the next scan cycle. During that window a container broken while offline still holds its ticket, for at most one `scanIntervalTicks`. A remote enable has the same window.
+
+A loader dismantled while disabled goes unnoticed for as long as its chunk stays unloaded, so `/chestloader list` can carry a stale disabled entry until something looks at the chunk again. And once a disabled record is discarded, re-forming the pattern in the same container starts a brand-new loader, activated by the usual open-and-check path; the mod does not remember that it was once disabled.
 
 ## How to verify
 
@@ -215,6 +231,13 @@ Place a loader in the Nether, restart with every player staying in the Overworld
 
 Stop the server, hand-edit the container's contents to break them, and restart. Confirm the loading is revoked after one scan cycle.
 
+Disable an active loader from `/chestloader list`, walk away, and confirm with `F3` plus `G` that the chunks unload. Restart the server and confirm the loader is still listed as disabled.
+
+From another dimension, click `[enable]` on a disabled loader, wait one scan cycle, and confirm the machine at the loader is running again without anyone having gone there.
+
+Disable a loader, break its pattern while the chunk is loaded, and confirm the record disappears from the list. Repeat with the chunk unloaded, and confirm the record survives until `enable` discards it.
+
 ## Next
 
 Client-side recoloring is not done yet. A barrel is a normal block model and a chest goes through a block entity renderer, so the two take different tint paths, and the active state would need syncing to the client.
+

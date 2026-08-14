@@ -8,6 +8,7 @@ import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import net.minecraft.SharedConstants;
 import net.minecraft.core.BlockPos;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtOps;
 import net.minecraft.nbt.Tag;
 import net.minecraft.server.Bootstrap;
@@ -69,5 +70,50 @@ class LoaderSavedDataTest {
 		assertTrue(!data.isDirty());
 		data.setDirty();
 		assertTrue(data.isDirty());
+	}
+
+	@Test
+	void disabledPositionsSurviveARoundTrip() {
+		LoaderSavedData data = new LoaderSavedData();
+		data.positions().add(new BlockPos(10, 64, 10).asLong());
+		data.disabled().add(new BlockPos(-20, 70, 30).asLong());
+		data.disabled().add(new BlockPos(500, -40, -500).asLong());
+
+		LoaderSavedData decoded = roundTrip(data);
+		assertEquals(new LongOpenHashSet(data.positions()), decoded.positions());
+		assertEquals(new LongOpenHashSet(data.disabled()), decoded.disabled());
+	}
+
+	@Test
+	void aFileWithoutTheDisabledFieldStillDecodes() {
+		// A save written before the disable feature existed holds only the positions field.
+		CompoundTag tag = new CompoundTag();
+		tag.putLongArray("positions", new long[] {new BlockPos(1, 2, 3).asLong()});
+
+		LoaderSavedData decoded = LoaderSavedData.CODEC.parse(NbtOps.INSTANCE, tag).getOrThrow();
+		assertEquals(1, decoded.positions().size());
+		assertTrue(decoded.disabled().isEmpty());
+	}
+
+	@Test
+	void aPositionInBothSetsLoadsAsDisabled() {
+		// The mod never writes such a file, but a hand-edited one might hold it. The safe reading of
+		// a contradictory entry is the one that loads nothing.
+		long contested = new BlockPos(7, 8, 9).asLong();
+		long plain = new BlockPos(1, 2, 3).asLong();
+		CompoundTag tag = new CompoundTag();
+		tag.putLongArray("positions", new long[] {contested, plain});
+		tag.putLongArray("disabled", new long[] {contested});
+
+		LoaderSavedData decoded = LoaderSavedData.CODEC.parse(NbtOps.INSTANCE, tag).getOrThrow();
+		assertEquals(new LongOpenHashSet(new long[] {plain}), decoded.positions());
+		assertEquals(new LongOpenHashSet(new long[] {contested}), decoded.disabled());
+	}
+
+	@Test
+	void theDecodedDisabledSetIsMutable() {
+		LoaderSavedData decoded = roundTrip(new LoaderSavedData());
+		decoded.disabled().add(new BlockPos(4, 5, 6).asLong());
+		assertEquals(1, decoded.disabled().size());
 	}
 }

@@ -30,8 +30,15 @@ import org.jspecify.annotations.Nullable;
  * drop it for the other, so the manager keeps a reference count per chunk and only touches the
  * ticket when that count leaves or reaches zero.
  *
- * <p>The position set of each dimension lives in a {@link LoaderSavedData} so it survives a restart.
- * The reference counts and the pending checks are rebuilt from it on load.
+ * <p>Besides the enabled positions there is a disabled set, for loaders a player switched off with
+ * {@code /chestloader disable}. A disabled position holds no ticket, counts toward no limit and no
+ * reference count, and its chunk unloads like any other. It only sits in the saved data waiting to
+ * be enabled again. Because its chunk is usually not readable, a disabled position is never checked
+ * on a schedule; it is validated opportunistically whenever its chunk happens to be loaded, and
+ * unconditionally when it is enabled.
+ *
+ * <p>The position sets of each dimension live in a {@link LoaderSavedData} so they survive a
+ * restart. The reference counts and the pending checks are rebuilt from them on load.
  */
 public final class LoaderManager {
 	/** How often the particle marker is emitted above an active container. */
@@ -58,8 +65,39 @@ public final class LoaderManager {
 		return rules;
 	}
 
-	/** One active container, and whether it still has to pass its first check after a restore. */
-	public record ActiveLoader(BlockPos pos, boolean awaitingCheck) {
+	/** What a tracked position is currently doing, for {@code /chestloader list} and its buttons. */
+	public enum LoaderStatus {
+		/** Holding a ticket and past its last check. */
+		ENABLED,
+		/** Holding a ticket, but not checked yet since it was restored or enabled remotely. */
+		AWAITING_CHECK,
+		/** Remembered but holding no ticket. */
+		DISABLED;
+	}
+
+	/** One tracked container. */
+	public record LoaderEntry(BlockPos pos, LoaderStatus status) {
+	}
+
+	/** The outcome of {@link #disable} or {@link #enable}, for the command to word its feedback. */
+	public enum ToggleResult {
+		DISABLED,
+		/** Disabled, but another loader in the same chunk still keeps the chunk loaded. */
+		DISABLED_CHUNK_STILL_HELD,
+		ALREADY_DISABLED,
+		/** Enabled and already past its check, because the chunk happened to be readable. */
+		ENABLED,
+		/** Enabled; the chunk is not readable yet, the periodic scan will run the first check. */
+		ENABLED_AWAITING_CHECK,
+		ALREADY_ENABLED,
+		/** The position is not tracked at all. */
+		NOT_A_LOADER,
+		/** The supplied position is outside the world or cannot be stored as a packed block position. */
+		OUT_OF_BOUNDS,
+		/** The chunk was readable and the pattern is gone, so the record was discarded instead. */
+		DISMANTLED,
+		LIMIT_TOTAL,
+		LIMIT_DIMENSION;
 	}
 
 	private enum DeactivationReason {
@@ -92,6 +130,10 @@ public final class LoaderManager {
 
 		private LongSet positions() {
 			return saved.positions();
+		}
+
+		private LongSet disabled() {
+			return saved.disabled();
 		}
 	}
 
@@ -127,20 +169,23 @@ public final class LoaderManager {
 	 */
 	private void restore(DimensionState state) {
 		long[] stored = state.positions().toLongArray();
-		if (stored.length == 0) {
+		if (stored.length == 0 && state.disabled().isEmpty()) {
 			return;
 		}
 
 		ServerLevel level = state.level;
 		if (!rules.enabledIn(level.dimension().identifier())) {
 			// The config stopped covering this dimension between two starts, e.g. the End was turned
-			// back off. No pattern can ever match here, so the ticket must not come back either.
+			// back off. No pattern can ever match here, so neither enabled nor disabled records remain.
+			int dropped = stored.length + state.disabled().size();
 			state.positions().clear();
+			state.disabled().clear();
 			state.saved.setDirty();
 			ChestLoader.LOGGER.warn("Dropped {} chunk loader(s) in {}, no configured pattern applies in this "
-					+ "dimension", stored.length, level.dimension().identifier());
+					+ "dimension", dropped, level.dimension().identifier());
 			return;
 		}
+		restoreDisabled(state);
 		// Rebuilt entry by entry so the limit checks below see a growing count.
 		state.positions().clear();
 
@@ -178,6 +223,34 @@ public final class LoaderManager {
 		}
 	}
 
+	/**
+	 * Disabled positions come back as they are: no ticket, no pending check, and no limit check
+	 * either, because the limits bound what is loaded and a disabled loader loads nothing. Only a
+	 * position outside the world is dropped.
+	 */
+	private void restoreDisabled(DimensionState state) {
+		int kept = 0;
+		int outOfBounds = 0;
+		for (long packed : state.disabled().toLongArray()) {
+			if (state.level.isInWorldBounds(BlockPos.of(packed))) {
+				kept++;
+			} else {
+				state.disabled().remove(packed);
+				state.saved.setDirty();
+				outOfBounds++;
+			}
+		}
+
+		String dimension = state.level.dimension().identifier().toString();
+		if (kept > 0) {
+			ChestLoader.LOGGER.info("Restored {} disabled chunk loader(s) in {}", kept, dimension);
+		}
+		if (outOfBounds > 0) {
+			ChestLoader.LOGGER.warn("Dropped {} disabled chunk loader(s) in {} whose position is outside the world",
+					outOfBounds, dimension);
+		}
+	}
+
 	public void shutdown() {
 		for (DimensionState state : dimensions.values()) {
 			for (long packedChunk : state.chunkRefCounts.keySet().toLongArray()) {
@@ -199,6 +272,16 @@ public final class LoaderManager {
 	 */
 	public void evaluate(ServerLevel level, BlockPos pos, @Nullable ServerPlayer player) {
 		DimensionState state = state(level);
+		if (state.disabled().contains(pos.asLong())) {
+			// A disabled loader must never come back from an open or a close, only from the enable
+			// command. But a readable container whose pattern is gone has been dismantled, and the
+			// record goes with it. The chunk-loaded guard matters: matchesPattern also returns false
+			// when the chunk simply is not readable, which says nothing about the container.
+			if (level.isLoaded(pos) && !matchesPattern(level, pos)) {
+				discardDisabled(state, pos);
+			}
+			return;
+		}
 		boolean loaded = state.positions().contains(pos.asLong());
 		boolean shouldLoad = matchesPattern(level, pos);
 		if (loaded) {
@@ -215,7 +298,13 @@ public final class LoaderManager {
 		}
 	}
 
-	/** Drops the ticket when the container is broken or replaced. */
+	/**
+	 * Drops the ticket when the container is broken or replaced. Only enabled positions react: the
+	 * unload event also fires on a plain chunk unload, which an enabled loader never sees (its own
+	 * ticket keeps the chunk loaded) but a disabled one sees all the time. Acting on it would wipe
+	 * every disabled record the moment its chunk unloads, so a disabled container that really was
+	 * broken is caught by the opportunistic checks instead.
+	 */
 	public void onBlockEntityRemoved(ServerLevel level, BlockPos pos) {
 		if (isActive(level, pos)) {
 			deactivate(level, pos, DeactivationReason.REMOVED);
@@ -224,7 +313,7 @@ public final class LoaderManager {
 
 	public void tickLevel(ServerLevel level) {
 		DimensionState state = dimensions.get(level.dimension());
-		if (state == null || state.positions().isEmpty()) {
+		if (state == null || (state.positions().isEmpty() && state.disabled().isEmpty())) {
 			return;
 		}
 		state.tickCounter++;
@@ -261,6 +350,16 @@ public final class LoaderManager {
 				deactivate(level, pos, DeactivationReason.PATTERN);
 			}
 		}
+
+		// Disabled positions are exempt from the unreadable counting above: unloaded is their normal
+		// state, not a symptom. But when something else happens to keep such a chunk readable, the
+		// container is right there to look at, and a dismantled one loses its record on the spot.
+		for (long packed : state.disabled().toLongArray()) {
+			BlockPos pos = BlockPos.of(packed);
+			if (level.isLoaded(pos) && !matchesPattern(level, pos)) {
+				discardDisabled(state, pos);
+			}
+		}
 	}
 
 	private void emitParticles(DimensionState state) {
@@ -282,6 +381,12 @@ public final class LoaderManager {
 		return state != null && state.positions().contains(pos.asLong());
 	}
 
+	public boolean isDisabled(ServerLevel level, BlockPos pos) {
+		DimensionState state = dimensions.get(level.dimension());
+		return state != null && state.disabled().contains(pos.asLong());
+	}
+
+	/** Enabled positions only. The limits bound loaded chunks, and disabled loaders load nothing. */
 	public int countIn(ServerLevel level) {
 		DimensionState state = dimensions.get(level.dimension());
 		return state == null ? 0 : state.positions().size();
@@ -295,16 +400,20 @@ public final class LoaderManager {
 		return total;
 	}
 
-	/** Every active container, grouped by dimension, for {@code /chestloader list}. */
-	public Map<ResourceKey<Level>, List<ActiveLoader>> listActive() {
-		Map<ResourceKey<Level>, List<ActiveLoader>> result = new LinkedHashMap<>();
+	/** Every tracked container, enabled and disabled, grouped by dimension, for the list command. */
+	public Map<ResourceKey<Level>, List<LoaderEntry>> listLoaders() {
+		Map<ResourceKey<Level>, List<LoaderEntry>> result = new LinkedHashMap<>();
 		for (Map.Entry<ResourceKey<Level>, DimensionState> entry : dimensions.entrySet()) {
 			DimensionState state = entry.getValue();
-			List<ActiveLoader> loaders = new ArrayList<>();
+			List<LoaderEntry> loaders = new ArrayList<>();
 			for (long packed : state.positions().toLongArray()) {
-				loaders.add(new ActiveLoader(BlockPos.of(packed), state.validation.isAwaiting(packed)));
+				loaders.add(new LoaderEntry(BlockPos.of(packed),
+						state.validation.isAwaiting(packed) ? LoaderStatus.AWAITING_CHECK : LoaderStatus.ENABLED));
 			}
-			loaders.sort(Comparator.comparingInt((ActiveLoader l) -> l.pos().getX())
+			for (long packed : state.disabled().toLongArray()) {
+				loaders.add(new LoaderEntry(BlockPos.of(packed), LoaderStatus.DISABLED));
+			}
+			loaders.sort(Comparator.comparingInt((LoaderEntry l) -> l.pos().getX())
 					.thenComparingInt(l -> l.pos().getZ())
 					.thenComparingInt(l -> l.pos().getY()));
 			if (!loaders.isEmpty()) {
@@ -312,6 +421,101 @@ public final class LoaderManager {
 			}
 		}
 		return result;
+	}
+
+	// Enable and disable ---------------------------------------------------------------------
+
+	/**
+	 * Takes the ticket away from an enabled loader but keeps the position, so it can be enabled
+	 * again later. Works regardless of whether the chunk is currently readable, which also covers a
+	 * loader still awaiting its first check after a restore.
+	 */
+	public ToggleResult disable(ServerLevel level, BlockPos pos) {
+		if (!isExactlyPackable(pos)) {
+			return ToggleResult.OUT_OF_BOUNDS;
+		}
+		DimensionState state = state(level);
+		if (state.disabled().contains(pos.asLong())) {
+			return ToggleResult.ALREADY_DISABLED;
+		}
+		if (!removeActive(state, pos)) {
+			return ToggleResult.NOT_A_LOADER;
+		}
+		state.disabled().add(pos.asLong());
+		state.saved.setDirty();
+		ChestLoader.LOGGER.debug("Disabled chunk loader at {} in {}", pos, level.dimension().identifier());
+		// The refcount entry outliving the removal means another loader shares the chunk, and then
+		// disabling this one does not actually unload anything. Worth telling the caller.
+		return state.chunkRefCounts.containsKey(ChunkPos.containing(pos).pack())
+				? ToggleResult.DISABLED_CHUNK_STILL_HELD
+				: ToggleResult.DISABLED;
+	}
+
+	/**
+	 * Gives a disabled loader its ticket back, usually without the chunk being readable: the
+	 * container cannot be checked before the ticket exists, because loading the chunk is what the
+	 * ticket is for. This is the restart-restore situation all over again, so it uses the same
+	 * machinery: ticket first, then the periodic scan runs the first real check once the chunk is
+	 * readable. When the chunk happens to be readable right now, the check runs immediately instead.
+	 */
+	public ToggleResult enable(ServerLevel level, BlockPos pos) {
+		if (!isExactlyPackable(pos)) {
+			return ToggleResult.OUT_OF_BOUNDS;
+		}
+		DimensionState state = state(level);
+		long packed = pos.asLong();
+		if (state.positions().contains(packed)) {
+			return ToggleResult.ALREADY_ENABLED;
+		}
+		if (!state.disabled().contains(packed)) {
+			return ToggleResult.NOT_A_LOADER;
+		}
+		if (!level.isInWorldBounds(pos)) {
+			return ToggleResult.OUT_OF_BOUNDS;
+		}
+		if (countTotal() >= rules.maxLoadersTotal()) {
+			return ToggleResult.LIMIT_TOTAL;
+		}
+		if (countIn(level) >= rules.maxLoadersPerDimension()) {
+			return ToggleResult.LIMIT_DIMENSION;
+		}
+		boolean readable = level.isLoaded(pos);
+		if (readable && !matchesPattern(level, pos)) {
+			discardDisabled(state, pos);
+			return ToggleResult.DISMANTLED;
+		}
+		state.disabled().remove(packed);
+		addActive(state, pos);
+		ChestLoader.LOGGER.debug("Enabled chunk loader at {} in {}", pos, level.dimension().identifier());
+		if (readable) {
+			return ToggleResult.ENABLED;
+		}
+		state.validation.await(packed);
+		return ToggleResult.ENABLED_AWAITING_CHECK;
+	}
+
+	/**
+	 * Saved positions use {@link BlockPos#asLong()}. Coordinates outside that packed range wrap to a
+	 * different position; accepting one would look up one loader but add or remove the ticket for a
+	 * different chunk.
+	 */
+	private static boolean isExactlyPackable(BlockPos pos) {
+		return BlockPos.of(pos.asLong()).equals(pos);
+	}
+
+	/** Drops a disabled record whose container turned out to be dismantled. */
+	private void discardDisabled(DimensionState state, BlockPos pos) {
+		if (!state.disabled().remove(pos.asLong())) {
+			return;
+		}
+		state.saved.setDirty();
+		ChestLoader.LOGGER.debug("Discarded the disabled chunk loader at {} in {}, its pattern is gone",
+				pos, state.level.dimension().identifier());
+		if (rules.notifyOnActivate()) {
+			notifyNearby(state.level, pos, prefixed(Component.literal(
+					"The disabled chunk loader here was dismantled, its record is removed.")
+					.withStyle(ChatFormatting.YELLOW)));
+		}
 	}
 
 	// Mutation -------------------------------------------------------------------------------
@@ -433,3 +637,4 @@ public final class LoaderManager {
 		return null;
 	}
 }
+
