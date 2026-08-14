@@ -31,6 +31,20 @@ public class ChestLoaderConfig {
 		public @Nullable String name;
 
 		/**
+		 * The dimensions this pattern applies in, as dimension identifiers. A container only matches
+		 * this pattern when its dimension is listed here, and a dimension no pattern lists never
+		 * activates anything. The default covers the Overworld and the Nether only, so the End stays
+		 * off until {@code minecraft:the_end} is added; a data-pack dimension is enabled the same way,
+		 * by its own identifier. When the field is omitted from the file, the default applies.
+		 */
+		public List<String> dimensions = defaultDimensions();
+
+		/** The dimensions a pattern applies in when the config file omits the field. */
+		public static List<String> defaultDimensions() {
+			return new ArrayList<>(List.of("minecraft:overworld", "minecraft:the_nether"));
+		}
+
+		/**
 		 * The layout drawn row by row over the container's slot grid. A {@code .} or a space is a slot
 		 * that must stay empty; any other character is a key that must appear in {@link #keys}. Rows
 		 * must be equal length, at most {@link LoaderRules#ROWS} of them, each at most

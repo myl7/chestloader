@@ -132,6 +132,15 @@ public final class LoaderManager {
 		}
 
 		ServerLevel level = state.level;
+		if (!rules.enabledIn(level.dimension().identifier())) {
+			// The config stopped covering this dimension between two starts, e.g. the End was turned
+			// back off. No pattern can ever match here, so the ticket must not come back either.
+			state.positions().clear();
+			state.saved.setDirty();
+			ChestLoader.LOGGER.warn("Dropped {} chunk loader(s) in {}, no configured pattern applies in this "
+					+ "dimension", stored.length, level.dimension().identifier());
+			return;
+		}
 		// Rebuilt entry by entry so the limit checks below see a growing count.
 		state.positions().clear();
 
@@ -401,7 +410,7 @@ public final class LoaderManager {
 
 	private boolean matchesPattern(ServerLevel level, BlockPos pos) {
 		Container container = containerAt(level, pos);
-		return container != null && rules.matches(container);
+		return container != null && rules.matches(level.dimension().identifier(), container);
 	}
 
 	/**

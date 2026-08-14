@@ -4,7 +4,7 @@ Vanilla-taste, server-only, and vanilla-client-friendly nether portal chunk load
 
 This document is also available in [中文](README.zh.md).
 
-Arrange obsidian, powered rail and a minecart the right way inside a chest or a barrel, and the chunk that container sits in becomes force-loaded, over the same area and shape as a nether portal loader. Break the arrangement and the loading is revoked at once, and the loaded state survives a restart.
+Arrange obsidian, powered rail and a minecart the right way inside a chest or a barrel, and the chunk that container sits in becomes force-loaded, over the same area and shape as a nether portal loader. Break the arrangement and the loading is revoked at once, and the loaded state survives a restart. Loading stays in the dimension the container sits in: a loader in the Overworld loads only the Overworld, one in the Nether only the Nether.
 
 ## Features
 
@@ -13,6 +13,7 @@ Arrange obsidian, powered rail and a minecart the right way inside a chest or a 
 - Server-side only, and vanilla clients can still join. Nothing is installed on the client, and the custom ticket type takes no part in registry sync. It works in single player and on a dedicated server alike.
 - Survives a restart, and is safe to remove. The mod saves the active positions itself and puts the loading back on world load, with no need to reopen the container or enter the dimension. Uninstalling leaves nothing behind in vanilla's ticket storage.
 - Configurable pattern. The shape, the items and the per-slot counts all live in a recipe-style grid in the config. Define several patterns, let each one slide or mirror, and set a min and max count per slot.
+- Per-dimension control. Each pattern lists the dimensions it applies in, and a dimension no pattern lists never activates anything. The Overworld and the Nether are on by default, the End is off until one config line turns it on, and a data-pack dimension is enabled by its identifier the same way.
 - Catches every change. Opening and closing a container is checked, and a periodic scan catches hopper transfers that skip those hooks. Loaders sharing a chunk are reference-counted, and the two halves of a double chest are judged separately.
 
 ## Versions
@@ -38,7 +39,7 @@ The artifact lands at `build/libs/chestloader-0.1.0.jar`. `build` runs the tests
 
 ## Tests
 
-35 JUnit cases cover shape matching, config parsing, ticket-level arithmetic, the saved-data codec round trip, and the unreadable-round counting during restore. They run without a server, so `./gradlew test` finishes in about a second. Shape matching is tested through a `SlotView` interface that exposes only the item and the count, because in 26.2 an `ItemStack`'s data components are bound only once the data packs load, and a plain JUnit test cannot build one.
+42 JUnit cases cover shape matching, per-dimension gating, config parsing, ticket-level arithmetic, the saved-data codec round trip, and the unreadable-round counting during restore. They run without a server, so `./gradlew test` finishes in about a second. Shape matching is tested through a `SlotView` interface that exposes only the item and the count, because in 26.2 an `ItemStack`'s data components are bound only once the data packs load, and a plain JUnit test cannot build one.
 
 5 GameTests cover what the JUnit tests cannot reach: whether the mixin really fires when a mock player opens and closes a container, whether the two halves of a double chest are judged separately, and whether items carrying data components still count. Run them on their own with `./gradlew runGameTest`. That starts a test server, so `build.gradle` sets `eula = true`.
 
@@ -64,6 +65,12 @@ The frame slides horizontally over columns 0 through 5, six valid placements in 
 Matching ignores data components, so a renamed or enchanted obsidian still counts. Crying obsidian does not, and neither does a plain rail, a detector rail or an activator rail.
 
 The two halves of a double chest are judged separately, each holding its own ticket.
+
+## Dimensions
+
+Loading happens only in the dimension the container sits in: a loader in the Overworld holds Overworld chunks, one in the Nether holds Nether chunks, and nothing is ever loaded on the other side of a portal. That differs from an actual nether portal loader, which keeps chunks alive in both dimensions at once, and it is deliberate — the loader is a container, not a portal.
+
+Which dimensions can activate at all is decided by the patterns. Each pattern carries a `dimensions` list, and a dimension no pattern lists is disabled: building the layout there simply does nothing. The default enables the Overworld and the Nether and leaves the End off; adding `minecraft:the_end` to a pattern's list turns the End on, and a data-pack dimension is enabled by its identifier the same way. See the config section for details.
 
 ## Loaded area
 
@@ -98,7 +105,7 @@ Storing the positions itself has another benefit: removing the mod is safe. `chu
 
 On restore the ticket goes back unconditionally, without reading the container. That is because reading a container needs its chunk loaded, and loading the chunk is exactly what the ticket is for. The re-check rides on the periodic scan. The scan first asks whether the chunk is loaded, skips the round and counts it once if not, and otherwise takes the block entity and runs the full check, revoking on a miss. Counting rounds rather than waiting a fixed delay avoids a wrong revocation when chunk loading is held up by something else. A position that stays unreadable for ten scans in a row is revoked with a warning logged, so stale data cannot hold a ticket forever.
 
-Restore also runs three checks. Anything over `maxLoadersPerDimension` or `maxLoadersTotal` is dropped with a log line, because the limits may have been lowered between two starts. A position outside the world border or the height range is dropped. When a data-pack dimension is removed, its records are no longer read, along with its dimension directory.
+Restore also runs four checks. Anything over `maxLoadersPerDimension` or `maxLoadersTotal` is dropped with a log line, because the limits may have been lowered between two starts. A position outside the world border or the height range is dropped. A dimension that no pattern applies in any more — the End turned back off between two starts, say — has all its recorded positions dropped with a log line. When a data-pack dimension is removed, its records are no longer read, along with its dimension directory.
 
 ## Config
 
@@ -109,6 +116,7 @@ The file is at `config/chestloader.json`. It is written with default values on t
   "patterns": [
     {
       "name": "obsidian-frame",
+      "dimensions": ["minecraft:overworld", "minecraft:the_nether"],
       "shape": [
         "OOOO",
         "ORMO",
@@ -144,6 +152,8 @@ The file is at `config/chestloader.json`. It is written with default values on t
 `patterns` is a list. A container activates when it matches any one entry. Within each entry:
 
 `shape` draws the layout row by row. A `.` or a space is a slot that must stay empty, any other character is a key. There are at most 3 rows and at most 9 columns, and every row is the same length. `keys` maps each character to a set of items and a count range. Any one of the items in `items` satisfies the slot. `min` is the fewest that slot may hold, default 1, and `max` is the most, which defaults to a full stack of 64 when omitted. The count is judged per slot, not summed over the whole container. With `slide` on, the shape may sit at any row and column offset it fits at, and every slot it does not cover must be empty. With it off, the shape is pinned to the top-left corner. With `mirror` on, the left-to-right reflection of the shape counts as well.
+
+`dimensions` lists the dimensions the pattern applies in, by dimension identifier. A container matches a pattern only when its own dimension is listed, and a dimension no pattern lists at all is disabled outright: building the layout there does nothing, with no message. The default list holds `minecraft:overworld` and `minecraft:the_nether`, so the End is off out of the box; add `minecraft:the_end` to a pattern to allow loading there. A data-pack dimension is enabled the same way, by its own identifier. Omitting the field keeps the default, so a config file written before this field existed keeps working in the Overworld and the Nether. An entry that does not parse as an identifier is logged and skipped, and a pattern whose list ends up empty never applies anywhere.
 
 An item in `items` that cannot be found is logged as a warning on start and skipped. When every item of a key resolves to nothing, that whole pattern is dropped and logged. When every pattern is dropped, no container ever activates. To allow a TNT minecart, add `minecraft:tnt_minecart` to `M`'s `items`. A spawner minecart and a command block minecart are best left out, because they cannot be obtained in survival. To use a different shape, items or counts, edit `shape`, `keys` and `min`/`max` directly.
 

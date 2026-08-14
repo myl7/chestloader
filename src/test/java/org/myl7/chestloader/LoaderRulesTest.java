@@ -4,9 +4,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.google.gson.Gson;
 import java.util.ArrayList;
 import java.util.List;
 import net.minecraft.SharedConstants;
+import net.minecraft.resources.Identifier;
 import net.minecraft.server.Bootstrap;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
@@ -22,6 +24,10 @@ class LoaderRulesTest {
 	/** The default ring is four wide, so it starts at columns 0 through 5. */
 	private static final int FRAME_WIDTH = 4;
 	private static final int MAX_COLUMN_OFFSET = LoaderRules.COLUMNS - FRAME_WIDTH;
+
+	private static final Identifier OVERWORLD = Identifier.fromNamespaceAndPath("minecraft", "overworld");
+	private static final Identifier NETHER = Identifier.fromNamespaceAndPath("minecraft", "the_nether");
+	private static final Identifier END = Identifier.fromNamespaceAndPath("minecraft", "the_end");
 
 	private static LoaderRules defaultRules;
 
@@ -112,7 +118,7 @@ class LoaderRulesTest {
 	@ParameterizedTest
 	@ValueSource(ints = {0, 1, 2, 3, 4, 5})
 	void everyHorizontalOffsetIsAccepted(int offset) {
-		assertTrue(defaultRules.matches(pattern(offset)));
+		assertTrue(defaultRules.matches(OVERWORLD, pattern(offset)));
 	}
 
 	@Test
@@ -122,7 +128,7 @@ class LoaderRulesTest {
 				if (!isFrameSlot(slot, offset)) {
 					continue;
 				}
-				assertFalse(defaultRules.matches(pattern(offset).clear(slot)),
+				assertFalse(defaultRules.matches(OVERWORLD, pattern(offset).clear(slot)),
 						"offset " + offset + " should not match with slot " + slot + " emptied");
 			}
 		}
@@ -130,31 +136,31 @@ class LoaderRulesTest {
 
 	@Test
 	void cryingObsidianIsNotObsidian() {
-		assertFalse(defaultRules.matches(pattern(1).put(1, Items.CRYING_OBSIDIAN, 1)));
+		assertFalse(defaultRules.matches(OVERWORLD, pattern(1).put(1, Items.CRYING_OBSIDIAN, 1)));
 	}
 
 	@Test
 	void railMustBePoweredAndReachTheMinimumCount() {
-		assertFalse(defaultRules.matches(pattern(1).put(railSlot(1), Items.POWERED_RAIL, 3)));
-		assertFalse(defaultRules.matches(pattern(1).put(railSlot(1), Items.RAIL, 8)));
-		assertFalse(defaultRules.matches(pattern(1).put(railSlot(1), Items.DETECTOR_RAIL, 8)));
-		assertFalse(defaultRules.matches(pattern(1).put(railSlot(1), Items.ACTIVATOR_RAIL, 8)));
-		assertTrue(defaultRules.matches(pattern(1).put(railSlot(1), Items.POWERED_RAIL, 64)));
+		assertFalse(defaultRules.matches(OVERWORLD, pattern(1).put(railSlot(1), Items.POWERED_RAIL, 3)));
+		assertFalse(defaultRules.matches(OVERWORLD, pattern(1).put(railSlot(1), Items.RAIL, 8)));
+		assertFalse(defaultRules.matches(OVERWORLD, pattern(1).put(railSlot(1), Items.DETECTOR_RAIL, 8)));
+		assertFalse(defaultRules.matches(OVERWORLD, pattern(1).put(railSlot(1), Items.ACTIVATOR_RAIL, 8)));
+		assertTrue(defaultRules.matches(OVERWORLD, pattern(1).put(railSlot(1), Items.POWERED_RAIL, 64)));
 	}
 
 	@Test
 	void obsidianCountIsNotCappedButTheMinecartCountIs() {
 		// The obsidian key has no max, a full stack in a ring slot is fine.
-		assertTrue(defaultRules.matches(pattern(1).put(1, Items.OBSIDIAN, 64)));
+		assertTrue(defaultRules.matches(OVERWORLD, pattern(1).put(1, Items.OBSIDIAN, 64)));
 		// The minecart key is min and max one, a second minecart in the slot breaks it.
-		assertFalse(defaultRules.matches(pattern(1).put(railSlot(1) + 1, Items.MINECART, 2)));
+		assertFalse(defaultRules.matches(OVERWORLD, pattern(1).put(railSlot(1) + 1, Items.MINECART, 2)));
 	}
 
 	@Test
 	void allDefaultMinecartTypesAreAccepted() {
 		for (Item minecart : new Item[]{Items.MINECART, Items.CHEST_MINECART, Items.HOPPER_MINECART,
 				Items.FURNACE_MINECART}) {
-			assertTrue(defaultRules.matches(pattern(2).put(railSlot(2) + 1, minecart, 1)),
+			assertTrue(defaultRules.matches(OVERWORLD, pattern(2).put(railSlot(2) + 1, minecart, 1)),
 					minecart + " should be accepted");
 		}
 	}
@@ -162,11 +168,11 @@ class LoaderRulesTest {
 	@Test
 	void anExtraMinecartTypeCanBeAddedToItsKey() {
 		Slots slots = pattern(2).put(railSlot(2) + 1, Items.TNT_MINECART, 1);
-		assertFalse(defaultRules.matches(slots));
+		assertFalse(defaultRules.matches(OVERWORLD, slots));
 
 		ChestLoaderConfig config = new ChestLoaderConfig();
 		config.patterns.get(0).keys.get("M").items.add("minecraft:tnt_minecart");
-		assertTrue(LoaderRules.from(config).matches(slots));
+		assertTrue(LoaderRules.from(config).matches(OVERWORLD, slots));
 	}
 
 	@Test
@@ -175,21 +181,21 @@ class LoaderRulesTest {
 				.put(railSlot(1), Items.MINECART, 1)
 				.put(railSlot(1) + 1, Items.POWERED_RAIL, 4);
 		// The default pattern has mirror on, so the rail and the minecart may trade places.
-		assertTrue(defaultRules.matches(swapped));
+		assertTrue(defaultRules.matches(OVERWORLD, swapped));
 
 		ChestLoaderConfig noMirror = new ChestLoaderConfig();
 		noMirror.patterns.get(0).mirror = false;
-		assertFalse(LoaderRules.from(noMirror).matches(swapped));
+		assertFalse(LoaderRules.from(noMirror).matches(OVERWORLD, swapped));
 	}
 
 	@Test
 	void anythingOutsideTheRingBreaksTheMatch() {
 		int spare = LoaderRules.CONTAINER_SIZE - 1;
-		assertFalse(defaultRules.matches(pattern(0).put(spare, Items.STONE, 1)));
+		assertFalse(defaultRules.matches(OVERWORLD, pattern(0).put(spare, Items.STONE, 1)));
 		// Even a pattern item, when it sits in a slot that has to stay empty.
-		assertFalse(defaultRules.matches(pattern(0).put(spare, Items.OBSIDIAN, 1)));
-		assertFalse(defaultRules.matches(pattern(0).put(spare, Items.MINECART, 1)));
-		assertFalse(defaultRules.matches(pattern(0).put(spare, Items.POWERED_RAIL, 4)));
+		assertFalse(defaultRules.matches(OVERWORLD, pattern(0).put(spare, Items.OBSIDIAN, 1)));
+		assertFalse(defaultRules.matches(OVERWORLD, pattern(0).put(spare, Items.MINECART, 1)));
+		assertFalse(defaultRules.matches(OVERWORLD, pattern(0).put(spare, Items.POWERED_RAIL, 4)));
 	}
 
 	@Test
@@ -204,17 +210,92 @@ class LoaderRulesTest {
 				both.put(slot, second.item(slot), second.count(slot));
 			}
 		}
-		assertFalse(defaultRules.matches(both));
+		assertFalse(defaultRules.matches(OVERWORLD, both));
 	}
 
 	@Test
 	void anEmptyContainerDoesNotMatch() {
-		assertFalse(defaultRules.matches(new Slots(LoaderRules.CONTAINER_SIZE)));
+		assertFalse(defaultRules.matches(OVERWORLD, new Slots(LoaderRules.CONTAINER_SIZE)));
 	}
 
 	@Test
 	void aContainerOfTheWrongSizeDoesNotMatch() {
-		assertFalse(defaultRules.matches(new Slots(9)));
+		assertFalse(defaultRules.matches(OVERWORLD, new Slots(9)));
+	}
+
+	@Test
+	void theEndIsDisabledByDefault() {
+		assertTrue(defaultRules.enabledIn(OVERWORLD));
+		assertTrue(defaultRules.enabledIn(NETHER));
+		assertFalse(defaultRules.enabledIn(END));
+		// The same layout that passes in the nether is silently ignored in the end.
+		assertTrue(defaultRules.matches(NETHER, pattern(1)));
+		assertFalse(defaultRules.matches(END, pattern(1)));
+	}
+
+	@Test
+	void addingTheEndToAPatternEnablesIt() {
+		ChestLoaderConfig config = new ChestLoaderConfig();
+		config.patterns.get(0).dimensions.add("minecraft:the_end");
+		LoaderRules rules = LoaderRules.from(config);
+		assertTrue(rules.enabledIn(END));
+		assertTrue(rules.matches(END, pattern(1)));
+	}
+
+	@Test
+	void eachDimensionUsesOnlyItsOwnPatterns() {
+		ChestLoaderConfig config = new ChestLoaderConfig();
+		PatternConfig pair = stonePair();
+		pair.dimensions = new ArrayList<>(List.of("minecraft:the_end", "mymod:custom"));
+		config.patterns.add(pair);
+		LoaderRules rules = LoaderRules.from(config);
+
+		Slots stones = new Slots(LoaderRules.CONTAINER_SIZE)
+				.put(0, Items.STONE, 1).put(1, Items.STONE, 1);
+		// The stone pair counts only where it is listed, a data-pack dimension included.
+		assertTrue(rules.matches(END, stones));
+		assertTrue(rules.matches(Identifier.fromNamespaceAndPath("mymod", "custom"), stones));
+		assertFalse(rules.matches(OVERWORLD, stones));
+		// And the default frame still stays out of the end.
+		assertFalse(rules.matches(END, pattern(1)));
+		assertTrue(rules.matches(NETHER, pattern(1)));
+	}
+
+	@Test
+	void anInvalidDimensionIdIsDroppedButTheRestStillApplies() {
+		ChestLoaderConfig config = new ChestLoaderConfig();
+		config.patterns.get(0).dimensions = new ArrayList<>(List.of("not a valid id", "minecraft:overworld"));
+		LoaderRules rules = LoaderRules.from(config);
+		assertTrue(rules.matches(OVERWORLD, pattern(1)));
+		assertFalse(rules.enabledIn(NETHER));
+	}
+
+	@Test
+	void aPatternListingNoDimensionNeverApplies() {
+		ChestLoaderConfig config = new ChestLoaderConfig();
+		config.patterns.get(0).dimensions = new ArrayList<>();
+		LoaderRules rules = LoaderRules.from(config);
+		assertFalse(rules.enabledIn(OVERWORLD));
+		assertFalse(rules.matches(OVERWORLD, pattern(1)));
+	}
+
+	@Test
+	void aNullDimensionsFieldFallsBackToOverworldAndNether() {
+		// What Gson leaves behind for an explicit "dimensions": null in the file.
+		ChestLoaderConfig config = new ChestLoaderConfig();
+		config.patterns.get(0).dimensions = null;
+		LoaderRules rules = LoaderRules.from(config);
+		assertTrue(rules.matches(OVERWORLD, pattern(1)));
+		assertTrue(rules.matches(NETHER, pattern(1)));
+		assertFalse(rules.enabledIn(END));
+	}
+
+	@Test
+	void aConfigFileOmittingDimensionsKeepsTheDefault() {
+		// A pre-dimensions config file has pattern entries without the field; Gson keeps the
+		// field initializer in that case, so old files keep working in the overworld and the nether.
+		PatternConfig parsed = new Gson().fromJson("{\"shape\": [\"SS\"]}", PatternConfig.class);
+		assertEquals(PatternConfig.defaultDimensions(), parsed.dimensions);
 	}
 
 	@Test
@@ -225,14 +306,14 @@ class LoaderRulesTest {
 		LoaderRules rules = LoaderRules.from(config);
 
 		// Two adjacent stone at the top-left corner.
-		assertTrue(rules.matches(new Slots(LoaderRules.CONTAINER_SIZE)
+		assertTrue(rules.matches(OVERWORLD, new Slots(LoaderRules.CONTAINER_SIZE)
 				.put(0, Items.STONE, 1).put(1, Items.STONE, 1)));
 		// The same pair one row down and one column right, reached by sliding vertically too.
-		assertTrue(rules.matches(new Slots(LoaderRules.CONTAINER_SIZE)
+		assertTrue(rules.matches(OVERWORLD, new Slots(LoaderRules.CONTAINER_SIZE)
 				.put(10, Items.STONE, 1).put(11, Items.STONE, 1)));
 		// A lone stone has no partner, and a third stone is one too many.
-		assertFalse(rules.matches(new Slots(LoaderRules.CONTAINER_SIZE).put(0, Items.STONE, 1)));
-		assertFalse(rules.matches(new Slots(LoaderRules.CONTAINER_SIZE)
+		assertFalse(rules.matches(OVERWORLD, new Slots(LoaderRules.CONTAINER_SIZE).put(0, Items.STONE, 1)));
+		assertFalse(rules.matches(OVERWORLD, new Slots(LoaderRules.CONTAINER_SIZE)
 				.put(0, Items.STONE, 1).put(1, Items.STONE, 1).put(2, Items.STONE, 1)));
 	}
 
@@ -253,14 +334,14 @@ class LoaderRulesTest {
 		ChestLoaderConfig config = new ChestLoaderConfig();
 		config.patterns.get(0).keys.get("O").items.add("chestloader:does_not_exist");
 		// The unknown id is ignored, obsidian is still there, so the canonical pattern still matches.
-		assertTrue(LoaderRules.from(config).matches(pattern(3)));
+		assertTrue(LoaderRules.from(config).matches(OVERWORLD, pattern(3)));
 	}
 
 	@Test
 	void aKeyWithNoKnownItemDropsThePatternSoNothingMatches() {
 		ChestLoaderConfig config = new ChestLoaderConfig();
 		config.patterns.get(0).keys.get("O").items = new ArrayList<>(List.of("chestloader:does_not_exist"));
-		assertFalse(LoaderRules.from(config).matches(pattern(3)));
+		assertFalse(LoaderRules.from(config).matches(OVERWORLD, pattern(3)));
 	}
 
 	@Test
