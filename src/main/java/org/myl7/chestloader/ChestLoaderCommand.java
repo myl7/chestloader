@@ -83,6 +83,13 @@ public final class ChestLoaderCommand {
 		}
 
 		ServerLevel level = context.getSource().getLevel();
+		// Said outright here, unlike the player-facing path, which stays silent on purpose. An admin
+		// asking about a position deserves the real reason over a misleading "does not match".
+		if (!manager.rules().enabledIn(level.dimension().identifier())) {
+			context.getSource().sendSuccess(() -> Component.literal("No configured pattern applies in "
+					+ level.dimension().identifier() + ", chunk loaders are disabled in this dimension"), true);
+			return 0;
+		}
 		BlockPos pos = BlockPosArgument.getLoadedBlockPos(context, "pos");
 		boolean before = manager.isActive(level, pos);
 		manager.evaluate(level, pos, context.getSource().getPlayer());

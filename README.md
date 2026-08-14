@@ -175,7 +175,7 @@ Lists every active container, grouped by dimension, along with the ticket level,
 /chestloader check <x> <y> <z>
 ```
 
-Runs the same check as opening the container at the given position, activating on a match and revoking on a miss. Use it to read a position's state without touching the container. It is also the only way to drive the whole activation path from the console, which helps when verifying on a headless server.
+Runs the same check as opening the container at the given position, activating on a match and revoking on a miss. Use it to read a position's state without touching the container. It is also the only way to drive the whole activation path from the console, which helps when verifying on a headless server. In a dimension no pattern applies in, the command says so outright rather than judging the container — the one place the mod names the reason, since the player-facing path stays silent there.
 
 Both commands need the gamemaster permission level.
 
