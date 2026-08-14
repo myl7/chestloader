@@ -1,5 +1,7 @@
 # Chest Loader
 
+[![CurseForge Downloads](https://img.shields.io/curseforge/dt/1638282?logo=curseforge&label=CurseForge&color=F16436)](https://www.curseforge.com/minecraft/mc-mods/chestloader)
+
 Vanilla-taste, server-only, and vanilla-client-friendly nether portal chunk loader that lives in a chest.
 
 This document is also available in [中文](README.zh.md).
