@@ -11,7 +11,10 @@ import net.minecraft.world.level.saveddata.SavedData;
 import net.minecraft.world.level.saveddata.SavedDataType;
 
 /**
- * The active container positions of one dimension, stored as packed {@code BlockPos} longs.
+ * The container positions of one dimension, stored as packed {@code BlockPos} longs. {@code
+ * positions} holds the enabled loaders, the ones that carry a ticket, and {@code disabled} holds the
+ * ones a player switched off with {@code /chestloader disable}: remembered, but loading nothing
+ * until they are enabled again. A position is never in both sets at once.
  *
  * <p>The mod stores positions itself rather than letting the vanilla persist flag save the tickets.
  * Vanilla stores tickets per chunk, which is not enough to get back to a container: the periodic
@@ -28,7 +31,8 @@ public final class LoaderSavedData extends SavedData {
 			set -> LongStream.of(set.toLongArray()));
 
 	public static final Codec<LoaderSavedData> CODEC = RecordCodecBuilder.create(instance -> instance.group(
-			POSITIONS_CODEC.optionalFieldOf("positions", LongSets.EMPTY_SET).forGetter(LoaderSavedData::positions)
+			POSITIONS_CODEC.optionalFieldOf("positions", LongSets.EMPTY_SET).forGetter(LoaderSavedData::positions),
+			POSITIONS_CODEC.optionalFieldOf("disabled", LongSets.EMPTY_SET).forGetter(LoaderSavedData::disabled)
 	).apply(instance, LoaderSavedData::new));
 
 	/**
@@ -44,17 +48,27 @@ public final class LoaderSavedData extends SavedData {
 			DataFixTypes.SAVED_DATA_FORCED_CHUNKS);
 
 	private final LongSet positions;
+	private final LongSet disabled;
 
 	public LoaderSavedData() {
-		this(LongSets.EMPTY_SET);
+		this(LongSets.EMPTY_SET, LongSets.EMPTY_SET);
 	}
 
-	private LoaderSavedData(LongSet initial) {
+	private LoaderSavedData(LongSet initialPositions, LongSet initialDisabled) {
 		// Copied, so the immutable default of the optional field is never handed out as the live set.
-		this.positions = new LongOpenHashSet(initial);
+		this.positions = new LongOpenHashSet(initialPositions);
+		this.disabled = new LongOpenHashSet(initialDisabled);
+		// The mod never writes a position into both sets, but a hand-edited or corrupted file might
+		// hold one. Disabled wins: the safe reading of a contradictory entry is the one that loads
+		// nothing.
+		this.positions.removeAll(this.disabled);
 	}
 
 	public LongSet positions() {
 		return positions;
+	}
+
+	public LongSet disabled() {
+		return disabled;
 	}
 }
