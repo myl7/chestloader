@@ -1,6 +1,7 @@
 package org.myl7.chestloader;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -32,6 +33,11 @@ import org.myl7.chestloader.ChestLoaderConfig.PatternConfig;
  *   O R M O
  *   O O O O
  * </pre>
+ *
+ * <p>Each pattern also lists the dimensions it applies in, and matching is asked per dimension. A
+ * dimension no pattern lists is disabled outright: nothing activates there, and positions restored
+ * from an older save are dropped. The default pattern lists the Overworld and the Nether, so the
+ * End stays off until the config adds it.
  */
 public final class LoaderRules {
 	public static final int CONTAINER_SIZE = 27;
@@ -44,9 +50,8 @@ public final class LoaderRules {
 	private static final int MAX_TICKET_RADIUS = 8;
 	private static final int MAX_SLOT_COUNT = 64;
 
-	private final List<Pattern> patterns;
-	/** Union of every item any pattern accepts, for the cheap reject before trying placements. */
-	private final Set<Item> allowedItems;
+	/** The patterns and derived item union of one dimension, keyed by the dimension identifier. */
+	private final Map<Identifier, DimensionGroup> dimensions;
 	private final int ticketRadius;
 	private final int scanIntervalTicks;
 	private final int maxLoadersPerDimension;
@@ -54,11 +59,10 @@ public final class LoaderRules {
 	private final boolean notifyOnActivate;
 	private final boolean particleOnActive;
 
-	private LoaderRules(List<Pattern> patterns, Set<Item> allowedItems, int ticketRadius,
+	private LoaderRules(Map<Identifier, DimensionGroup> dimensions, int ticketRadius,
 			int scanIntervalTicks, int maxLoadersPerDimension, int maxLoadersTotal,
 			boolean notifyOnActivate, boolean particleOnActive) {
-		this.patterns = patterns;
-		this.allowedItems = allowedItems;
+		this.dimensions = dimensions;
 		this.ticketRadius = ticketRadius;
 		this.scanIntervalTicks = scanIntervalTicks;
 		this.maxLoadersPerDimension = maxLoadersPerDimension;
@@ -71,18 +75,21 @@ public final class LoaderRules {
 		ChestLoaderConfig fallback = new ChestLoaderConfig();
 		List<PatternConfig> configured = config.patterns != null ? config.patterns : fallback.patterns;
 
-		List<Pattern> patterns = new ArrayList<>();
-		Set<Item> allowedItems = new LinkedHashSet<>();
+		Map<Identifier, DimensionGroup> dimensions = new LinkedHashMap<>();
 		int index = 0;
 		for (PatternConfig patternConfig : configured) {
 			Pattern compiled = compile(patternConfig, index++);
-			if (compiled != null) {
-				patterns.add(compiled);
-				compiled.collectItems(allowedItems);
+			if (compiled == null) {
+				continue;
+			}
+			for (Identifier dimension : compileDimensions(patternConfig, compiled.name)) {
+				DimensionGroup group = dimensions.computeIfAbsent(dimension, key -> new DimensionGroup());
+				group.patterns.add(compiled);
+				compiled.collectItems(group.allowedItems);
 			}
 		}
-		if (patterns.isEmpty()) {
-			ChestLoader.LOGGER.warn("No usable pattern configured, no container will ever activate");
+		if (dimensions.isEmpty()) {
+			ChestLoader.LOGGER.warn("No usable pattern applies in any dimension, no container will ever activate");
 		}
 
 		int ticketLevel = clamp(config.ticketLevel, FULL_CHUNK_LEVEL - MAX_TICKET_RADIUS, FULL_CHUNK_LEVEL, "ticketLevel");
@@ -91,8 +98,7 @@ public final class LoaderRules {
 		}
 
 		return new LoaderRules(
-				patterns,
-				allowedItems,
+				dimensions,
 				FULL_CHUNK_LEVEL - ticketLevel,
 				clamp(config.scanIntervalTicks, 1, 72000, "scanIntervalTicks"),
 				clamp(config.maxLoadersPerDimension, 0, Integer.MAX_VALUE, "maxLoadersPerDimension"),
@@ -102,6 +108,23 @@ public final class LoaderRules {
 	}
 
 	// Compilation ----------------------------------------------------------------------------
+
+	private static Set<Identifier> compileDimensions(PatternConfig config, String name) {
+		List<String> ids = config.dimensions != null ? config.dimensions : PatternConfig.defaultDimensions();
+		Set<Identifier> result = new LinkedHashSet<>();
+		for (String id : ids) {
+			Identifier parsed = id != null ? Identifier.tryParse(id) : null;
+			if (parsed == null) {
+				ChestLoader.LOGGER.warn("Pattern '{}' lists an invalid dimension id '{}', ignoring it", name, id);
+			} else {
+				result.add(parsed);
+			}
+		}
+		if (result.isEmpty()) {
+			ChestLoader.LOGGER.warn("Pattern '{}' lists no valid dimension, it will never apply", name);
+		}
+		return result;
+	}
 
 	private static @Nullable Pattern compile(PatternConfig config, int index) {
 		String name = config.name != null && !config.name.isBlank() ? config.name : "pattern-" + index;
@@ -195,6 +218,15 @@ public final class LoaderRules {
 
 	// Matching -------------------------------------------------------------------------------
 
+	/**
+	 * The patterns that apply in one dimension, plus the union of every item they accept, which
+	 * backs the cheap reject before any placement is tried.
+	 */
+	private static final class DimensionGroup {
+		private final List<Pattern> patterns = new ArrayList<>();
+		private final Set<Item> allowedItems = new LinkedHashSet<>();
+	}
+
 	/** One cell of a compiled pattern: the items it accepts and the count range it allows. */
 	private record Cell(Set<Item> items, int min, int max) {
 		boolean accepts(@Nullable Item item, int count) {
@@ -276,20 +308,26 @@ public final class LoaderRules {
 		}
 	}
 
-	public boolean matches(Container container) {
-		return matches(new ContainerSlotView(container));
+	/** Whether any pattern applies in the dimension at all. A dimension no pattern lists is off. */
+	public boolean enabledIn(Identifier dimension) {
+		return dimensions.containsKey(dimension);
 	}
 
-	public boolean matches(SlotView slots) {
-		if (slots.size() != CONTAINER_SIZE) {
+	public boolean matches(Identifier dimension, Container container) {
+		return matches(dimension, new ContainerSlotView(container));
+	}
+
+	public boolean matches(Identifier dimension, SlotView slots) {
+		DimensionGroup group = dimensions.get(dimension);
+		if (group == null || slots.size() != CONTAINER_SIZE) {
 			return false;
 		}
 		// Cheap reject first: an ordinary storage chest almost always holds something no pattern lists,
 		// and that costs one pass instead of walking every placement of every pattern.
-		if (!onlyHoldsAllowedItems(slots)) {
+		if (!onlyHoldsAllowedItems(group, slots)) {
 			return false;
 		}
-		for (Pattern pattern : patterns) {
+		for (Pattern pattern : group.patterns) {
 			if (pattern.matches(slots)) {
 				return true;
 			}
@@ -297,10 +335,10 @@ public final class LoaderRules {
 		return false;
 	}
 
-	private boolean onlyHoldsAllowedItems(SlotView slots) {
+	private static boolean onlyHoldsAllowedItems(DimensionGroup group, SlotView slots) {
 		for (int slot = 0; slot < CONTAINER_SIZE; slot++) {
 			Item item = slots.item(slot);
-			if (item != null && !allowedItems.contains(item)) {
+			if (item != null && !group.allowedItems.contains(item)) {
 				return false;
 			}
 		}
