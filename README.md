@@ -18,7 +18,7 @@ For single-player use, install the same files in the local game instance.
 
 ## Usage
 
-Place the configured pattern in a chest or barrel, then open the container. The default pattern uses ten obsidian, at least four powered rails in one slot, and one minecart:
+Place the configured pattern in a chest or barrel, then open the container. The default pattern uses at least ten obsidian, at least four powered rails in one slot, and one minecart:
 
 ```text
 O O O O
