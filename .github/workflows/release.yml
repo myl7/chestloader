@@ -1,0 +1,40 @@
+name: release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: gradle
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Build and test
+        run: ./gradlew build --stacktrace
+
+      - name: Attach the mod jar to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          # Fails when the tag does not match mod_version in gradle.properties.
+          jar="build/libs/chestloader-${TAG#v}.jar"
+          test -f "$jar"
+          gh release upload "$TAG" "$jar" --clobber

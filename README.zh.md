@@ -10,6 +10,8 @@ Chest Loader 是一个纯服务端 Fabric 模组。它用原版物品把木箱�
 
 ## 安装
 
+从 [releases 页面](https://github.com/myl7/chestloader/releases)或 [CurseForge](https://www.curseforge.com/minecraft/mc-mods/chestloader) 下载 JAR。
+
 在服务器安装 Fabric Loader，再把 Fabric API 和 Chest Loader JAR 放入服务器的 `mods` 目录。客户端无需安装 Chest Loader 或 Fabric API。
 
 单人游戏需要把这些文件安装到本地游戏实例。

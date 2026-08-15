@@ -12,6 +12,8 @@ This document is also available in [中文](README.zh.md).
 
 ## Installation
 
+Download the JAR from the [releases page](https://github.com/myl7/chestloader/releases) or [CurseForge](https://www.curseforge.com/minecraft/mc-mods/chestloader).
+
 Install Fabric Loader on the server, then put Fabric API and the Chest Loader JAR in the server's `mods` directory. Clients do not need Chest Loader or Fabric API.
 
 For single-player use, install the same files in the local game instance.
